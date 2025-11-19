@@ -12,6 +12,7 @@ import time
 import os
 from PIL import Image, ImageTk
 import threading
+from datetime import datetime
 
 class CarDetectorGUI:
     def __init__(self, root):
@@ -94,6 +95,24 @@ class CarDetectorGUI:
                                    variable=self.save_output_var, bg='#ecf0f1')
         save_check.pack(anchor='w', padx=10, pady=5)
         
+        # การตั้งค่าเสียง
+        audio_frame = tk.Frame(settings_group, bg='#ecf0f1')
+        audio_frame.pack(fill='x', padx=10, pady=5)
+        
+        self.enable_audio_var = tk.BooleanVar(value=True)
+        audio_check = tk.Checkbutton(audio_frame, text="เปิดเสียงแจ้งเตือน", 
+                                   variable=self.enable_audio_var, bg='#ecf0f1',
+                                   command=self.update_audio_settings)
+        audio_check.pack(anchor='w')
+        
+        tk.Label(audio_frame, text="ช่วงเวลาแจ้งเตือน (วินาที):", bg='#ecf0f1', 
+                font=('Arial', 9)).pack(anchor='w', pady=(5,0))
+        self.audio_interval_var = tk.IntVar(value=5)
+        interval_scale = tk.Scale(audio_frame, from_=3, to=15, resolution=1,
+                                orient='horizontal', variable=self.audio_interval_var, 
+                                bg='#ecf0f1', command=self.update_audio_settings)
+        interval_scale.pack(fill='x', pady=(0,5))
+        
         # กลุ่มปุ่มควบคุม
         control_group = tk.LabelFrame(control_frame, text="ควบคุมการทำงาน", 
                                      font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
@@ -130,6 +149,9 @@ class CarDetectorGUI:
         
         self.fps_label = tk.Label(stats_group, text="FPS: 0", bg='#ecf0f1', font=('Arial', 10))
         self.fps_label.pack(anchor='w', padx=10, pady=2)
+        
+        self.time_label = tk.Label(stats_group, text="เวลา: --:--:--", bg='#ecf0f1', font=('Arial', 10))
+        self.time_label.pack(anchor='w', padx=10, pady=2)
         
         # Progress Bar
         self.progress = ttk.Progressbar(control_frame, length=280, mode='determinate')
@@ -173,6 +195,14 @@ class CarDetectorGUI:
         if file_path:
             self.file_path_var.set(file_path)
     
+    def update_audio_settings(self, *args):
+        """อัพเดตการตั้งค่าเสียง"""
+        if self.detector:
+            self.detector.set_audio_settings(
+                enable=self.enable_audio_var.get(),
+                interval=self.audio_interval_var.get()
+            )
+    
     def start_processing(self):
         """เริ่มประมวลผลวิดีโอ"""
         if not self.detector:
@@ -193,6 +223,9 @@ class CarDetectorGUI:
         self.stop_button.config(state='normal')
         self.is_processing = True
         
+        # อัพเดตการตั้งค่าเสียงก่อนเริ่มประมวลผล
+        self.update_audio_settings()
+        
         # เริ่ม thread สำหรับประมวลผล
         self.video_thread = threading.Thread(target=self.process_video_thread, args=(video_path,))
         self.video_thread.daemon = True
@@ -212,6 +245,9 @@ class CarDetectorGUI:
         self.webcam_button.config(state='disabled')
         self.stop_button.config(state='normal')
         self.is_processing = True
+        
+        # อัพเดตการตั้งค่าเสียงก่อนเริ่ม webcam
+        self.update_audio_settings()
         
         # เริ่ม thread สำหรับ webcam
         self.video_thread = threading.Thread(target=self.process_webcam_thread)
@@ -394,6 +430,10 @@ class CarDetectorGUI:
         self.vehicles_label.config(text=f"รถในเฟรม: {vehicle_count}")
         self.total_label.config(text=f"รถทั้งหมด: {self.total_vehicles}")
         self.fps_label.config(text=f"FPS: {current_fps:.1f}")
+        
+        # อัพเดตเวลาปัจจุบัน
+        current_time = datetime.now().strftime("%H:%M:%S")
+        self.time_label.config(text=f"เวลา: {current_time}")
 
 def main():
     """ฟังก์ชันหลัก"""

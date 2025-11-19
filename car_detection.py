@@ -8,6 +8,26 @@ import numpy as np
 from ultralytics import YOLO
 import time
 import os
+import pyttsx3
+from datetime import datetime
+import threading
+import sys
+import locale
+
+# ตั้งค่า encoding สำหรับ Windows
+if sys.platform.startswith('win'):
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+    
+# ตั้งค่า locale สำหรับภาษาไทย
+try:
+    locale.setlocale(locale.LC_ALL, 'th_TH.UTF-8')
+except:
+    try:
+        locale.setlocale(locale.LC_ALL, 'Thai_Thailand.874')
+    except:
+        pass
 
 class CarDetector:
     def __init__(self, model_path='yolov8n.pt'):
@@ -22,12 +42,21 @@ class CarDetector:
         
         # คลาสที่เกี่ยวข้องกับยานพาหนะ (COCO dataset)
         self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
-        self.class_names = {
+        self.class_names_th = {
             2: 'รถยนต์',
             3: 'จักรยานยนต์',
             5: 'รถบัส',
             7: 'รถบรรทุก'
         }
+        self.class_names_en = {
+            2: 'Car',
+            3: 'Motorcycle',
+            5: 'Bus',
+            7: 'Truck'
+        }
+        # ใช้ภาษาอังกฤษเป็นค่าเริ่มต้นเพื่อหลีกเลี่ยงปัญหา encoding
+        self.class_names = self.class_names_en
+        self.use_thai = False
         
         # สีสำหรับ bounding boxes
         self.colors = {
@@ -37,7 +66,78 @@ class CarDetector:
             7: (255, 255, 0)   # ฟ้า - รถบรรทุก
         }
         
-        print("โหลด model สำเร็จ!")
+        # การตั้งค่าเสียง
+        self.enable_audio = True
+        self.audio_interval = 5  # แจ้งเตือนทุก 5 วินาที
+        self.last_audio_time = 0
+        self.tts_engine = None
+        self.init_tts()
+        
+        print("YOLO model loaded successfully!" if not self.use_thai else "โหลด model สำเร็จ!")
+    
+    def set_language(self, use_thai=False):
+        """เปลี่ยนภาษาการแสดงผล"""
+        self.use_thai = use_thai
+        if use_thai:
+            self.class_names = self.class_names_th
+        else:
+            self.class_names = self.class_names_en
+    
+    def init_tts(self):
+        """เริ่มต้น Text-to-Speech engine"""
+        try:
+            self.tts_engine = pyttsx3.init()
+            # ตั้งค่าเสียง
+            self.tts_engine.setProperty('rate', 150)  # ความเร็วในการพูด
+            self.tts_engine.setProperty('volume', 0.8)  # ระดับเสียง
+            print("เสียง Text-to-Speech พร้อมใช้งาน")
+        except Exception as e:
+            print(f"Cannot initialize TTS: {e}" if not self.use_thai else f"ไม่สามารถเริ่มต้น TTS ได้: {e}")
+            self.enable_audio = False
+    
+    def speak_timestamp(self, vehicle_count):
+        """พูดเวลาและจำนวนรถที่ตรวจพบ"""
+        if not self.enable_audio or not self.tts_engine:
+            return
+        
+        current_time = time.time()
+        if current_time - self.last_audio_time >= self.audio_interval:
+            try:
+                now = datetime.now()
+                time_str = now.strftime("%H:%M:%S")
+                
+                if self.use_thai:
+                    if vehicle_count > 0:
+                        message = f"เวลา {time_str} ตรวจพบรถ {vehicle_count} คัน"
+                    else:
+                        message = f"เวลา {time_str} ไม่พบรถ"
+                else:
+                    if vehicle_count > 0:
+                        message = f"Time {time_str}, detected {vehicle_count} vehicles"
+                    else:
+                        message = f"Time {time_str}, no vehicles detected"
+                
+                # ใช้ thread แยกเพื่อไม่ให้การพูดไปชะงักการประมวลผล
+                threading.Thread(target=self._speak, args=(message,), daemon=True).start()
+                self.last_audio_time = current_time
+                
+            except Exception as e:
+                error_msg = f"Audio error: {e}" if not self.use_thai else f"ข้อผิดพลาดในการสร้างเสียง: {e}"
+                print(error_msg)
+    
+    def _speak(self, text):
+        """ฟังก์ชันพูดใน thread แยก"""
+        try:
+            self.tts_engine.say(text)
+            self.tts_engine.runAndWait()
+        except Exception as e:
+            error_msg = f"Cannot speak: {e}" if not self.use_thai else f"ไม่สามารถพูดได้: {e}"
+            print(error_msg)
+    
+    def set_audio_settings(self, enable=True, interval=5):
+        """ตั้งค่าเสียง"""
+        self.enable_audio = enable
+        self.audio_interval = interval
     
     def detect_vehicles_in_frame(self, frame, confidence_threshold=0.5):
         """
@@ -94,6 +194,9 @@ class CarDetector:
                         cv2.putText(frame, label, (x1, y1 - 5),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
+        # เพิ่มการแจ้งเตือนด้วยเสียง
+        self.speak_timestamp(vehicle_count)
+        
         return frame, vehicle_count, detection_details
     
     def process_video(self, video_path, output_path=None, show_preview=True):
@@ -109,7 +212,8 @@ class CarDetector:
         cap = cv2.VideoCapture(video_path)
         
         if not cap.isOpened():
-            print(f"ไม่สามารถเปิดไฟล์วิดีโอ: {video_path}")
+            error_msg = f"Cannot open video file: {video_path}" if not self.use_thai else f"ไม่สามารถเปิดไฟล์วิดีโอ: {video_path}"
+            print(error_msg)
             return
         
         # ดึงข้อมูลวิดีโอ
@@ -118,10 +222,16 @@ class CarDetector:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        print(f"ข้อมูลวิดีโอ:")
-        print(f"  - ความละเอียด: {width}x{height}")
-        print(f"  - FPS: {fps}")
-        print(f"  - จำนวนเฟรม: {total_frames}")
+        if self.use_thai:
+            print(f"ข้อมูลวิดีโอ:")
+            print(f"  - ความละเอียด: {width}x{height}")
+            print(f"  - FPS: {fps}")
+            print(f"  - จำนวนเฟรม: {total_frames}")
+        else:
+            print(f"Video information:")
+            print(f"  - Resolution: {width}x{height}")
+            print(f"  - FPS: {fps}")
+            print(f"  - Total frames: {total_frames}")
         
         # ตั้งค่า VideoWriter สำหรับบันทึกวิดีโอ (ถ้าต้องการ)
         out = None
@@ -148,10 +258,18 @@ class CarDetector:
             processed_frame, vehicle_count, details = self.detect_vehicles_in_frame(frame)
             total_vehicles += vehicle_count
             
-            # เพิ่มข้อมูลสถิติลงในเฟรม
+            # เพิ่มข้อมูลสถิติและเวลาลงในเฟรม
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             stats_text = f"Frame: {frame_count}/{total_frames} | รถในเฟรม: {vehicle_count} | รวม: {total_vehicles}"
+            time_text = f"เวลา: {current_time}"
+            
+            # แสดงสถิติ
             cv2.putText(processed_frame, stats_text, (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            # แสดงเวลา
+            cv2.putText(processed_frame, time_text, (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             
             # บันทึกเฟรม (ถ้าต้องการ)
             if out:
@@ -210,11 +328,14 @@ class CarDetector:
         cap = cv2.VideoCapture(camera_index)
         
         if not cap.isOpened():
-            print(f"ไม่สามารถเปิดกล้อง index: {camera_index}")
+            error_msg = f"Cannot open camera index: {camera_index}" if not self.use_thai else f"ไม่สามารถเปิดกล้อง index: {camera_index}"
+            print(error_msg)
             return
         
-        print("เริ่มตรวจจับรถจากกล้อง...")
-        print("กด 'q' เพื่อหยุด")
+        start_msg = "Starting car detection from camera..." if not self.use_thai else "เริ่มตรวจจับรถจากกล้อง..."
+        quit_msg = "Press 'q' to quit" if not self.use_thai else "กด 'q' เพื่อหยุด"
+        print(start_msg)
+        print(quit_msg)
         
         total_vehicles = 0
         frame_count = 0
@@ -230,12 +351,26 @@ class CarDetector:
             processed_frame, vehicle_count, details = self.detect_vehicles_in_frame(frame)
             total_vehicles += vehicle_count
             
-            # เพิ่มข้อมูลสถิติ
-            stats_text = f"Frame: {frame_count} | รถในเฟรม: {vehicle_count} | รวม: {total_vehicles}"
+            # เพิ่มข้อมูลสถิติและเวลา
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if self.use_thai:
+                stats_text = f"Frame: {frame_count} | รถในเฟรม: {vehicle_count} | รวม: {total_vehicles}"
+                time_text = f"เวลา: {current_time}"
+                window_title = 'การตรวจจับรถยนต์ - Webcam'
+            else:
+                stats_text = f"Frame: {frame_count} | Vehicles: {vehicle_count} | Total: {total_vehicles}"
+                time_text = f"Time: {current_time}"
+                window_title = 'Car Detection - Webcam'
+            
+            # แสดงสถิติ
             cv2.putText(processed_frame, stats_text, (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
-            cv2.imshow('การตรวจจับรถยนต์ - Webcam', processed_frame)
+            # แสดงเวลา
+            cv2.putText(processed_frame, time_text, (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            
+            cv2.imshow(window_title, processed_frame)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
@@ -247,35 +382,64 @@ def main():
     """ฟังก์ชันหลัก"""
     detector = CarDetector()
     
-    print("=== โปรแกรมตรวจจับรถยนต์ ===")
-    print("1. ประมวลผลจากไฟล์วิดีโอ")
-    print("2. ตรวจจับจากกล้อง webcam")
-    print("3. ออกจากโปรแกรม")
+    # เลือกภาษา
+    print("=== Car Detection Program ===")
+    print("1. English")
+    print("2. ไทย (Thai)")
+    lang_choice = input("Select language / เลือกภาษา (1-2): ")
+    
+    use_thai = lang_choice == '2'
+    detector.set_language(use_thai)
+    
+    if use_thai:
+        print("\n=== โปรแกรมตรวจจับรถยนต์ ===")
+        print("1. ประมวลผลจากไฟล์วิดีโอ")
+        print("2. ตรวจจับจากกล้อง webcam")
+        print("3. ออกจากโปรแกรม")
+        choice_prompt = "\nเลือกตัวเลือก (1-3): "
+    else:
+        print("\n=== Car Detection Program ===")
+        print("1. Process video file")
+        print("2. Detect from webcam")
+        print("3. Exit program")
+        choice_prompt = "\nSelect option (1-3): "
     
     while True:
-        choice = input("\nเลือกตัวเลือก (1-3): ")
+        choice = input(choice_prompt)
         
         if choice == '1':
-            video_path = input("ใส่เส้นทางไฟล์วิดีโอ: ")
+            if use_thai:
+                video_path = input("ใส่เส้นทางไฟล์วิดีโอ: ")
+                save_prompt = "ต้องการบันทึกวิดีโอผลลัพธ์ไหม? (y/n): "
+                output_prompt = "ใส่ชื่อไฟล์ output (เช่น output.mp4): "
+                not_found_msg = "ไม่พบไฟล์วิดีโอ"
+            else:
+                video_path = input("Enter video file path: ")
+                save_prompt = "Save output video? (y/n): "
+                output_prompt = "Enter output filename (e.g., output.mp4): "
+                not_found_msg = "Video file not found"
+                
             if os.path.exists(video_path):
-                save_output = input("ต้องการบันทึกวิดีโอผลลัพธ์ไหม? (y/n): ").lower()
+                save_output = input(save_prompt).lower()
                 output_path = None
                 if save_output == 'y':
-                    output_path = input("ใส่ชื่อไฟล์ output (เช่น output.mp4): ")
+                    output_path = input(output_prompt)
                 
                 detector.process_video(video_path, output_path)
             else:
-                print("ไม่พบไฟล์วิดีโอ")
+                print(not_found_msg)
                 
         elif choice == '2':
             detector.process_webcam()
             
         elif choice == '3':
-            print("ออกจากโปรแกรม")
+            exit_msg = "ออกจากโปรแกรม" if use_thai else "Exiting program"
+            print(exit_msg)
             break
             
         else:
-            print("กรุณาเลือก 1, 2, หรือ 3")
+            invalid_msg = "กรุณาเลือก 1, 2, หรือ 3" if use_thai else "Please select 1, 2, or 3"
+            print(invalid_msg)
 
 if __name__ == "__main__":
     main()
